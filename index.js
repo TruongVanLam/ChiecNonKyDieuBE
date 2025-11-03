@@ -5,47 +5,90 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const app = express();
+const prizes = [
+  { text: "GIẢI ĐỘC ĐẮC", code: "0001", limit: 2 },
+  { text: "BÌNH TRỮ SỮA KENDAMIL", code: "0002", limit: 5 },
+  { text: "KHĂN DỊU ÊM", code: "0003", limit: 5 },
+  { text: "TÚI KENDAMIL", code: "0004", limit: 5 },
+  { text: "THÌA BÁO NÓNG 2 ĐẦU", code: "0005", limit: 5 },
+  { text: "TÚI KENDAMIL & KHĂN DỊU ÊM", code: "0006", limit: 5 },
+  { text: "CHÚC BẠN MAY MẮN LẦN SAU", code: "0007", limit: Infinity },
+  { text: "BÌNH TRỮ SỮA & KHĂN DỊU ÊM", code: "0008", limit: 5 },
+];
 
+const app = express();
 app.use(cors());
 app.use(express.json());
 
 const accessToken = process.env.PAGE_ACCESS_TOKEN;
 const urlSendMessage = process.env.URL_SEND_MESSAGE;
 
-const blacklist = new Set();
+// Bộ nhớ tạm
+const winners = {};          // { code: [contactId...] }
+const blacklist = new Set(); // contactId đã confirm
 
-app.post("/api/send-prize", async (req, res) => {
+// ------------------ API: SPIN ------------------
+app.post("/api/spin", (req, res) => {
+  const { contactId } = req.body;
+
+  if (!contactId) {
+    return res.status(400).json({ error: "Missing contactId" });
+  }
+
+  // Nếu user đã từng quay rồi thì không cho quay lại
+  // if (blacklist.has(contactId)) {
+  //   return res.json({
+  //     success: false,
+  //     message: "Bạn đã tham gia rồi!"
+  //   });
+  // }
+
+  // Xác định phần thưởng (và đảm bảo phần thưởng còn slot)
+  const prize = pickAvailablePrize();
+
+  // Gửi kết quả về FE để FE hiển thị quay
+  res.json({
+    success: true,
+    prize
+  });
+});
+
+// ------------------ API: CONFIRM ------------------
+app.post("/api/confirm", async (req, res) => {
   try {
     const { contactId, prize } = req.body;
+    console.log("🚀 Confirm request:", { contactId, prize });
 
-    if (!contactId || !prize) {
-      return res.status(400).json({ error: "Missing contactId or prize" });
+    if (!contactId) {
+      return res.status(400).json({ error: "Missing contactId or no pending prize" });
     }
 
-    // Kiểm tra trước xem người này đã quay chưa
-    if (blacklist.has(contactId)) {
-      const alreadyMsg = `Mẹ đã tham gia quay rồi, hãy theo dõi fanpage để cập nhật minigame hấp dẫn khác nhé`;
-
-      // Gửi tin nhắn từ chối
-      await sendFbMessage(contactId, alreadyMsg);
-      return res.json({ success: false, message: "Người dùng đã chơi rồi" });
+    // Kiểm tra quota (nếu không phải ô may mắn lần sau)
+    if (prize.code !== "0007") {
+      if (!winners[prize.code]) winners[prize.code] = [];
+      winners[prize.code].push(contactId);
     }
 
-    // Nếu chưa trong blacklist → xử lý trúng thưởng
+    // Xây tin nhắn
     let message = "";
-    if (prize.code == "0007") {
-      message = `Tiếc quá 🙁 mẹ chưa trúng thưởng rồi, mẹ theo dõi fanpage để cập nhật minigame hấp dẫn khác nhé`;
-    } else if (prize.code == "0001") {
-      message = `🎉🎉🎉Chúc mừng mẹ đã trúng phần quà 2 tháng sử dụng Kendamil miễn phí, mỗi tháng tối đa 3 lon.\nMẹ hãy để lại thông tin: \n- HỌ TÊN\n- SĐT\n- ĐỊA CHỈ NHẬN HÀNG\nđể Kendamil gửi quà tới mẹ nha.`;
+    if (prize.code === "0007") {
+      message = "Tiếc quá 🙁 mẹ chưa trúng thưởng rồi, mẹ theo dõi fanpage để cập nhật minigame hấp dẫn khác nhé";
+    } else if (prize.code === "0001") {
+      message =
+        "🎉🎉🎉Chúc mừng mẹ đã trúng phần quà 2 tháng sử dụng Kendamil miễn phí, mỗi tháng tối đa 3 lon.\n" +
+        "Mẹ hãy để lại thông tin: \n- HỌ TÊN\n- SĐT\n- ĐỊA CHỈ NHẬN HÀNG\nđể Kendamil gửi quà tới mẹ nha.";
     } else {
-      message = `🎉🎉🎉Chúc mừng mẹ đã trúng phần quà ${prize.text}.\nMẹ hãy để lại thông tin: \n- HỌ TÊN\n- SĐT\n- ĐỊA CHỈ NHẬN HÀNG\nđể Kendamil gửi quà tới mẹ nha.`;
+      message =
+        `🎉🎉🎉Chúc mừng mẹ đã trúng phần quà ${prize.text}.\n` +
+        "Mẹ hãy để lại thông tin: \n- HỌ TÊN\n- SĐT\n- ĐỊA CHỈ NHẬN HÀNG\nđể Kendamil gửi quà tới mẹ nha.";
     }
 
+    // Gửi tin nhắn Messenger
     await sendFbMessage(contactId, message);
 
     blacklist.add(contactId);
-    console.log("✅ Added to blacklist:", contactId);
+
+    console.log("✅ Tin nhắn đã gửi cho:", contactId);
 
     res.json({ success: true, message: "Tin nhắn đã gửi thành công!" });
   } catch (error) {
@@ -54,21 +97,37 @@ app.post("/api/send-prize", async (req, res) => {
   }
 });
 
-async function sendFbMessage(contactId, message) {
-  const response = await fetch(
-    `${urlSendMessage}?access_token=${accessToken}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        recipient: { id: contactId },
-        message: { text: message }
-      })
-    }
-  );
-  const result = await response.json();
-  if (result.error) throw new Error(result.error.message);
-  console.log("📤 FB API Response:", result);
+// ------------------ Helper Functions ------------------
+let startAngle = 0;
+const arc = (2 * Math.PI) / segments.length;
+function pickAvailablePrize() {
+  // const available = prizes.filter(p => (winners[p.code]?.length || 0) < p.limit);
+  // if (available.length === 0) {
+  //   return { text: "CHÚC BẠN MAY MẮN LẦN SAU", code: "0007", limit: Infinity };
+  // }
+  // return available[Math.floor(Math.random() * available.length)];
+
+  const pointerAngle = -Math.PI / 2;
+  let relativeAngle = pointerAngle - startAngle;
+  relativeAngle =
+    ((relativeAngle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const index = Math.floor(relativeAngle / arc);
+  return (index + segments.length) % segments.length;
 }
 
+async function sendFbMessage(contactId, message) {
+  const response = await fetch(`${urlSendMessage}?access_token=${accessToken}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: contactId },
+      message: { text: message }
+    })
+  });
+
+  const result = await response.json();
+  if (result.error) throw new Error(result.error.message);
+}
+
+// ------------------ Start Server ------------------
 app.listen(3000, () => console.log("🚀 Server running on port 3000"));
