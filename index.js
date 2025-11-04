@@ -6,14 +6,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const prizes = [
-  { text: "GIẢI ĐỘC ĐẮC", code: "0001", limit: 2 },
-  { text: "BÌNH TRỮ SỮA KENDAMIL", code: "0002", limit: 5 },
-  { text: "KHĂN DỊU ÊM", code: "0003", limit: 5 },
-  { text: "TÚI KENDAMIL", code: "0004", limit: 5 },
-  { text: "THÌA BÁO NÓNG 2 ĐẦU", code: "0005", limit: 5 },
-  { text: "TÚI KENDAMIL & KHĂN DỊU ÊM", code: "0006", limit: 5 },
-  { text: "CHÚC BẠN MAY MẮN LẦN SAU", code: "0007", limit: Infinity },
-  { text: "BÌNH TRỮ SỮA & KHĂN DỊU ÊM", code: "0008", limit: 5 },
+  { text: "GIẢI ĐỘC ĐẮC", code: "0001", limit: 1, weight: 5 }, // 2 giải
+  { text: "BÌNH TRỮ SỮA KENDAMIL", code: "0002", limit: 1, weight: 15 },
+  { text: "KHĂN DỊU ÊM", code: "0003", limit: 1, weight: 15 },
+  { text: "TÚI KENDAMIL", code: "0004", limit: 1, weight: 20 },
+  { text: "THÌA BÁO NÓNG 2 ĐẦU", code: "0005", limit: 1, weight: 20 },
+  { text: "TÚI KENDAMIL & KHĂN DỊU ÊM", code: "0006", limit: 1, weight: 20 },
+  { text: "CHÚC BẠN MAY MẮN LẦN SAU", code: "0007", limit: Infinity, weight: 300 }, // không giới hạn
+  { text: "BÌNH TRỮ SỮA & KHĂN DỊU ÊM", code: "0008", limit: 1, weight: 20 },
 ];
 
 const app = express();
@@ -36,20 +36,22 @@ app.post("/api/spin", (req, res) => {
   }
 
   // Nếu user đã từng quay rồi thì không cho quay lại
-  // if (blacklist.has(contactId)) {
-  //   return res.json({
-  //     success: false,
-  //     message: "Bạn đã tham gia rồi!"
-  //   });
-  // }
+  if (blacklist.has(contactId)) {
+    return res.json({
+      error: true,
+      message: "Bạn đã tham gia rồi!"
+    });
+  }
+  console.log("winner:", winners);
+  
 
   // Xác định phần thưởng (và đảm bảo phần thưởng còn slot)
-  const prize = pickAvailablePrize();
+  const index = pickAvailablePrize();
 
   // Gửi kết quả về FE để FE hiển thị quay
   res.json({
     success: true,
-    prize
+    index
   });
 });
 
@@ -84,7 +86,7 @@ app.post("/api/confirm", async (req, res) => {
     }
 
     // Gửi tin nhắn Messenger
-    await sendFbMessage(contactId, message);
+    // await sendFbMessage(contactId, message);
 
     blacklist.add(contactId);
 
@@ -98,21 +100,25 @@ app.post("/api/confirm", async (req, res) => {
 });
 
 // ------------------ Helper Functions ------------------
-let startAngle = 0;
-const arc = (2 * Math.PI) / segments.length;
 function pickAvailablePrize() {
-  // const available = prizes.filter(p => (winners[p.code]?.length || 0) < p.limit);
-  // if (available.length === 0) {
-  //   return { text: "CHÚC BẠN MAY MẮN LẦN SAU", code: "0007", limit: Infinity };
-  // }
-  // return available[Math.floor(Math.random() * available.length)];
+  const available = prizes
+    .map((p, i) => ({ ...p, index: i })) // thêm index vào từng phần tử
+    .filter(p => (winners[p.code]?.length || 0) < p.limit);
 
-  const pointerAngle = -Math.PI / 2;
-  let relativeAngle = pointerAngle - startAngle;
-  relativeAngle =
-    ((relativeAngle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-  const index = Math.floor(relativeAngle / arc);
-  return (index + segments.length) % segments.length;
+  if (available.length === 0) {
+    return 6; // Chúc bạn may mắn lần sau
+  }
+
+  const totalWeight = available.reduce((sum, p) => sum + p.weight, 0);
+  let random = Math.random() * totalWeight;
+
+  for (const prize of available) {
+    random -= prize.weight;
+    if (random <= 0) {
+      return prize.index;
+    }
+  }
+  return available[available.length - 1].index;
 }
 
 async function sendFbMessage(contactId, message) {
