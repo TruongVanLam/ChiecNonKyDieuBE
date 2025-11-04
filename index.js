@@ -6,14 +6,19 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const prizes = [
-  { text: "GIẢI ĐỘC ĐẮC", code: "0001", limit: 1, weight: 5 }, // 2 giải
-  { text: "BÌNH TRỮ SỮA KENDAMIL", code: "0002", limit: 1, weight: 15 },
-  { text: "KHĂN DỊU ÊM", code: "0003", limit: 1, weight: 15 },
-  { text: "TÚI KENDAMIL", code: "0004", limit: 1, weight: 20 },
-  { text: "THÌA BÁO NÓNG 2 ĐẦU", code: "0005", limit: 1, weight: 20 },
-  { text: "TÚI KENDAMIL & KHĂN DỊU ÊM", code: "0006", limit: 1, weight: 20 },
-  { text: "CHÚC BẠN MAY MẮN LẦN SAU", code: "0007", limit: Infinity, weight: 300 }, // không giới hạn
-  { text: "BÌNH TRỮ SỮA & KHĂN DỊU ÊM", code: "0008", limit: 1, weight: 20 },
+  { text: "GIẢI ĐỘC ĐẮC", code: "0001", limit: 2, weight: 5 },
+  { text: "BÌNH TRỮ SỮA KENDAMIL", code: "0002", limit: 5, weight: 15 },
+  { text: "KHĂN DỊU ÊM", code: "0003", limit: 5, weight: 15 },
+  { text: "TÚI KENDAMIL", code: "0004", limit: 5, weight: 20 },
+  { text: "THÌA BÁO NÓNG 2 ĐẦU", code: "0005", limit: 5, weight: 20 },
+  { text: "TÚI KENDAMIL & KHĂN DỊU ÊM", code: "0006", limit: 5, weight: 20 },
+  {
+    text: "CHÚC BẠN MAY MẮN LẦN SAU",
+    code: "0007",
+    limit: Infinity,
+    weight: 100,
+  }, // không giới hạn
+  { text: "BÌNH TRỮ SỮA & KHĂN DỊU ÊM", code: "0008", limit: 5, weight: 20 },
 ];
 
 const app = express();
@@ -24,7 +29,7 @@ const accessToken = process.env.PAGE_ACCESS_TOKEN;
 const urlSendMessage = process.env.URL_SEND_MESSAGE;
 
 // Bộ nhớ tạm
-const winners = {};          // { code: [contactId...] }
+const winners = {}; // { code: [contactId...] }
 const blacklist = new Set(); // contactId đã confirm
 
 // ------------------ API: SPIN ------------------
@@ -35,15 +40,23 @@ app.post("/api/spin", (req, res) => {
     return res.status(400).json({ error: "Missing contactId" });
   }
 
+  // Kiểm tra thời gian, chỉ cho phép chơi từ 8h sáng
+  const now = new Date();
+  if (now.getHours() < 8) {
+    return res.json({
+      error: true,
+      message: "Game chỉ bắt đầu từ 8h sáng! Vui lòng quay lại sau.",
+    });
+  }
+
   // Nếu user đã từng quay rồi thì không cho quay lại
   if (blacklist.has(contactId)) {
     return res.json({
       error: true,
-      message: "Bạn đã tham gia rồi!"
+      message: "Bạn đã tham gia rồi!",
     });
   }
   console.log("winner:", winners);
-  
 
   // Xác định phần thưởng (và đảm bảo phần thưởng còn slot)
   const index = pickAvailablePrize();
@@ -51,7 +64,7 @@ app.post("/api/spin", (req, res) => {
   // Gửi kết quả về FE để FE hiển thị quay
   res.json({
     success: true,
-    index
+    index,
   });
 });
 
@@ -62,7 +75,9 @@ app.post("/api/confirm", async (req, res) => {
     console.log("🚀 Confirm request:", { contactId, prize });
 
     if (!contactId) {
-      return res.status(400).json({ error: "Missing contactId or no pending prize" });
+      return res
+        .status(400)
+        .json({ error: "Missing contactId or no pending prize" });
     }
 
     // Kiểm tra quota (nếu không phải ô may mắn lần sau)
@@ -74,7 +89,8 @@ app.post("/api/confirm", async (req, res) => {
     // Xây tin nhắn
     let message = "";
     if (prize.code === "0007") {
-      message = "Tiếc quá 🙁 mẹ chưa trúng thưởng rồi, mẹ theo dõi fanpage để cập nhật minigame hấp dẫn khác nhé";
+      message =
+        "Tiếc quá 🙁 mẹ chưa trúng thưởng rồi, mẹ theo dõi fanpage để cập nhật minigame hấp dẫn khác nhé";
     } else if (prize.code === "0001") {
       message =
         "🎉🎉🎉Chúc mừng mẹ đã trúng phần quà 2 tháng sử dụng Kendamil miễn phí, mỗi tháng tối đa 3 lon.\n" +
@@ -86,7 +102,7 @@ app.post("/api/confirm", async (req, res) => {
     }
 
     // Gửi tin nhắn Messenger
-    // await sendFbMessage(contactId, message);
+    await sendFbMessage(contactId, message);
 
     blacklist.add(contactId);
 
@@ -103,7 +119,7 @@ app.post("/api/confirm", async (req, res) => {
 function pickAvailablePrize() {
   const available = prizes
     .map((p, i) => ({ ...p, index: i })) // thêm index vào từng phần tử
-    .filter(p => (winners[p.code]?.length || 0) < p.limit);
+    .filter((p) => (winners[p.code]?.length || 0) < p.limit);
 
   if (available.length === 0) {
     return 6; // Chúc bạn may mắn lần sau
@@ -122,14 +138,17 @@ function pickAvailablePrize() {
 }
 
 async function sendFbMessage(contactId, message) {
-  const response = await fetch(`${urlSendMessage}?access_token=${accessToken}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: contactId },
-      message: { text: message }
-    })
-  });
+  const response = await fetch(
+    `${urlSendMessage}?access_token=${accessToken}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: contactId },
+        message: { text: message },
+      }),
+    }
+  );
 
   const result = await response.json();
   if (result.error) throw new Error(result.error.message);
