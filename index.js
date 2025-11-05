@@ -2,8 +2,20 @@ import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
+import { Redis } from '@upstash/redis';
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
 
 dotenv.config();
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 const prizes = [
   { text: "GIẢI ĐỘC ĐẮC", code: "0001", limit: 2, weight: 5 },
@@ -28,12 +40,8 @@ app.use(express.json());
 const accessToken = process.env.PAGE_ACCESS_TOKEN;
 const urlSendMessage = process.env.URL_SEND_MESSAGE;
 
-// Bộ nhớ tạm
-const winners = {}; // { code: [contactId...] }
-const blacklist = new Set(); // contactId đã confirm
-
 // ------------------ API: SPIN ------------------
-app.post("/api/spin", (req, res) => {
+app.post("/api/spin", async (req, res) => {
   const { contactId } = req.body;
 
   if (!contactId) {
@@ -41,8 +49,8 @@ app.post("/api/spin", (req, res) => {
   }
 
   // Kiểm tra thời gian, chỉ cho phép chơi từ 8h sáng
-  const now = new Date();
-  if (now.getHours() < 8) {
+  const now = dayjs().tz("Asia/Ho_Chi_Minh");
+  if (now.hour() < 8) {
     return res.json({
       error: true,
       message: "Game chỉ bắt đầu từ 8h sáng! Vui lòng quay lại sau.",
@@ -50,16 +58,16 @@ app.post("/api/spin", (req, res) => {
   }
 
   // Nếu user đã từng quay rồi thì không cho quay lại
-  if (blacklist.has(contactId)) {
+  const isBlacklisted = await redis.sismember("blacklist", contactId);
+  if (isBlacklisted) {
     return res.json({
       error: true,
       message: "Bạn đã tham gia rồi!",
     });
   }
-  console.log("winner:", winners);
 
   // Xác định phần thưởng (và đảm bảo phần thưởng còn slot)
-  const index = pickAvailablePrize();
+  const index = await pickAvailablePrize();
 
   // Gửi kết quả về FE để FE hiển thị quay
   res.json({
@@ -82,8 +90,8 @@ app.post("/api/confirm", async (req, res) => {
 
     // Kiểm tra quota (nếu không phải ô may mắn lần sau)
     if (prize.code !== "0007") {
-      if (!winners[prize.code]) winners[prize.code] = [];
-      winners[prize.code].push(contactId);
+      const winnerKey = `winners:${prize.code}`;
+      await redis.sadd(winnerKey, contactId);
     }
 
     // Xây tin nhắn
@@ -104,7 +112,7 @@ app.post("/api/confirm", async (req, res) => {
     // Gửi tin nhắn Messenger
     await sendFbMessage(contactId, message);
 
-    blacklist.add(contactId);
+    await redis.sadd("blacklist", contactId);
 
     console.log("✅ Tin nhắn đã gửi cho:", contactId);
 
@@ -116,26 +124,41 @@ app.post("/api/confirm", async (req, res) => {
 });
 
 // ------------------ Helper Functions ------------------
-function pickAvailablePrize() {
-  const available = prizes
-    .map((p, i) => ({ ...p, index: i })) // thêm index vào từng phần tử
-    .filter((p) => (winners[p.code]?.length || 0) < p.limit);
+async function pickAvailablePrize() {
+  // Lấy danh sách phần thưởng cùng index
+  const prizesWithIndex = prizes.map((p, i) => ({ ...p, index: i }));
 
-  if (available.length === 0) {
-    return 6; // Chúc bạn may mắn lần sau
+  // Lọc ra những giải còn slot (so sánh limit với số người trúng hiện tại trong Redis)
+  const available = [];
+  for (const p of prizesWithIndex) {
+    const winnerKey = `winners:${p.code}`;
+    const count = await redis.scard(winnerKey); // Đếm số người trúng giải này
+    if (count < p.limit) {
+      available.push(p);
+    }
   }
 
+  // Nếu không còn phần thưởng nào, trả về "chúc may mắn lần sau" (index 6)
+  if (available.length === 0) {
+    return 6;
+  }
+
+  // Random theo trọng số (weight)
   const totalWeight = available.reduce((sum, p) => sum + p.weight, 0);
   let random = Math.random() * totalWeight;
 
   for (const prize of available) {
     random -= prize.weight;
     if (random <= 0) {
+      console.log("🎁 Phần thưởng được chọn:", prize.index);
       return prize.index;
     }
   }
+
+  // Phòng trường hợp tính toán dư — trả về phần thưởng cuối cùng trong danh sách available
   return available[available.length - 1].index;
 }
+
 
 async function sendFbMessage(contactId, message) {
   const response = await fetch(
